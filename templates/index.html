@@ -222,13 +222,13 @@ function renderPhotos(photos) {
     results.appendChild(card);
 
     const marker = L.marker([p.lat, p.lng], { icon: makeIcon('photo') }).addTo(map);
+    const imgSrc = p.photo_url ? p.photo_url : `/uploads/${p.filename}`;
     marker.bindPopup(`
       <div class="popup-body">
-        <img class="popup-img" src="/uploads/${p.filename}" alt="">
+        <img class="popup-img" src="${imgSrc}" alt="">
         <div class="popup-name">${p.title || 'Untitled'}</div>
         ${p.address ? `<div class="popup-addr">📍 ${p.address}</div>` : ''}
       </div>`);
-    markers.push(marker);
 
     card.addEventListener('click', e => {
       if (e.target.classList.contains('result-delete')) return;

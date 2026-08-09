@@ -6,6 +6,8 @@ import requests
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, url_for, send_from_directory
 import sqlite3
+import cloudinary
+import cloudinary.uploader
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
@@ -13,6 +15,13 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif'}
 DB_PATH = os.path.join(os.path.dirname(__file__), 'kauai.db')
 CACHE_TTL = 60 * 60 * 24  # 24 hours in seconds
+
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET'),
+    secure=True
+)
 
 KAUAI = {'lat': 22.0964, 'lng': -159.5261, 'sw_lat': 21.87, 'sw_lng': -159.85, 'ne_lat': 22.25, 'ne_lng': -159.25}
 
@@ -33,7 +42,8 @@ def init_db():
     with get_db() as conn:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS photos (
-                id TEXT PRIMARY KEY, filename TEXT NOT NULL,
+                id TEXT PRIMARY KEY, filename TEXT,
+                photo_url TEXT,
                 title TEXT, description TEXT, category TEXT,
                 lat REAL NOT NULL, lng REAL NOT NULL,
                 address TEXT, source TEXT, uploaded_at TEXT NOT NULL
@@ -44,6 +54,10 @@ def init_db():
                 cached_at   REAL NOT NULL
             );
         ''')
+        # Migration safety: add photo_url column if this DB predates it
+        cols = [row['name'] for row in conn.execute('PRAGMA table_info(photos)').fetchall()]
+        if 'photo_url' not in cols:
+            conn.execute('ALTER TABLE photos ADD COLUMN photo_url TEXT')
     print("DB initialized.")
 
 
@@ -52,7 +66,6 @@ def allowed_file(f):
 
 
 def get_cached_pois(tab):
-    """Return cached POI list if fresh, else None."""
     with get_db() as conn:
         row = conn.execute(
             'SELECT data, cached_at FROM poi_cache WHERE tab = ?', (tab,)
@@ -63,7 +76,6 @@ def get_cached_pois(tab):
 
 
 def set_cached_pois(tab, pois):
-    """Store POI list in cache."""
     with get_db() as conn:
         conn.execute(
             'INSERT OR REPLACE INTO poi_cache (tab, data, cached_at) VALUES (?, ?, ?)',
@@ -134,7 +146,6 @@ def parse_osm(elements):
 
 
 def fetch_from_overpass(tab):
-    """Fetch from Overpass with one retry on timeout."""
     query = QUERIES.get(tab, QUERIES['eat'])
     for attempt in range(2):
         try:
@@ -149,12 +160,22 @@ def fetch_from_overpass(tab):
             return parse_osm(data.get('elements', [])), None
         except requests.exceptions.Timeout:
             if attempt == 0:
-                time.sleep(2)  # brief pause before retry
+                time.sleep(2)
                 continue
             return None, 'Overpass API timed out. Try again in a moment.'
         except Exception as e:
             return None, str(e)
     return None, 'Failed after retry.'
+
+
+def save_to_cloudinary(local_filepath):
+    """Upload a local file to Cloudinary and return its permanent secure URL."""
+    result = cloudinary.uploader.upload(
+        local_filepath,
+        folder='kauai-guide',
+        resource_type='image'
+    )
+    return result['secure_url']
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -171,23 +192,23 @@ def upload():
         if not file or not allowed_file(file.filename):
             return jsonify({'error': 'Invalid file type'}), 400
         ext = file.filename.rsplit('.', 1)[1].lower()
-        filename = f"{uuid.uuid4().hex}.{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
+        temp_filename = f"{uuid.uuid4().hex}.{ext}"
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        temp_filepath = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
+        file.save(temp_filepath)
 
-        # Convert HEIC to JPEG for browser display
+        # Convert HEIC to JPEG (Cloudinary can handle HEIC, but this keeps EXIF/GPS extraction reliable)
         if ext in ('heic', 'heif'):
             try:
                 from pillow_heif import register_heif_opener
                 register_heif_opener()
                 from PIL import Image
-                img = Image.open(filepath)
-                jpg_filename = filename.rsplit('.', 1)[0] + '.jpg'
+                img = Image.open(temp_filepath)
+                jpg_filename = temp_filename.rsplit('.', 1)[0] + '.jpg'
                 jpg_filepath = os.path.join(app.config['UPLOAD_FOLDER'], jpg_filename)
                 img.save(jpg_filepath, 'JPEG', quality=85)
-                os.remove(filepath)
-                filename = jpg_filename
-                filepath = jpg_filepath
+                os.remove(temp_filepath)
+                temp_filepath = jpg_filepath
             except Exception:
                 pass
 
@@ -198,17 +219,27 @@ def upload():
             lat, lng = None, None
 
         if not lat or not lng:
-            lat, lng = extract_exif_gps(filepath)
+            lat, lng = extract_exif_gps(temp_filepath)
 
         if not lat or not lng:
-            os.remove(filepath)
+            os.remove(temp_filepath)
             return jsonify({'error': 'No location found. Please pin a location on the map or use a photo with GPS data.'}), 400
+
+        # Upload to Cloudinary, then remove the local temp copy
+        try:
+            photo_url = save_to_cloudinary(temp_filepath)
+        except Exception as e:
+            os.remove(temp_filepath)
+            return jsonify({'error': f'Upload to Cloudinary failed: {e}'}), 500
+        finally:
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
 
         photo_id = uuid.uuid4().hex
         with get_db() as conn:
             conn.execute(
-                'INSERT INTO photos (id,filename,title,description,category,lat,lng,address,source,uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                (photo_id, filename,
+                'INSERT INTO photos (id,filename,photo_url,title,description,category,lat,lng,address,source,uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                (photo_id, None, photo_url,
                  request.form.get('title','').strip() or None,
                  request.form.get('description','').strip() or None,
                  request.form.get('category','see'),
@@ -217,7 +248,7 @@ def upload():
                  request.form.get('source','').strip() or None,
                  datetime.utcnow().isoformat())
             )
-        return jsonify({'id': photo_id, 'redirect': url_for('index'), 'lat': lat, 'lng': lng})
+        return jsonify({'id': photo_id, 'redirect': url_for('index'), 'lat': lat, 'lng': lng, 'photo_url': photo_url})
 
     return render_template('upload.html', kauai=KAUAI)
 
@@ -228,6 +259,7 @@ def api_exif_gps():
     if not file:
         return jsonify({'lat': None, 'lng': None})
     ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else 'jpg'
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     tmp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"_tmp_{uuid.uuid4().hex}.{ext}")
     file.save(tmp_path)
     lat, lng = extract_exif_gps(tmp_path)
@@ -237,6 +269,7 @@ def api_exif_gps():
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
+    # Kept for backward compatibility with any photos uploaded before the Cloudinary switch
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -245,12 +278,10 @@ def api_pois():
     tab  = request.args.get('tab', 'eat')
     term = request.args.get('term', '').lower()
 
-    # 1. Try SQLite cache first
     cached = get_cached_pois(tab)
     if cached is not None:
         results = cached
     else:
-        # 2. Try static seed file
         seed_path = os.path.join(os.path.dirname(__file__), 'static', f'data_{tab}.json')
         if os.path.exists(seed_path):
             with open(seed_path) as f:
@@ -258,7 +289,6 @@ def api_pois():
             results = parse_osm(data.get('elements', []))
             set_cached_pois(tab, results)
         else:
-            # 3. Fall back to live Overpass
             results, error = fetch_from_overpass(tab)
             if error:
                 return jsonify({'error': error, 'pois': []})
@@ -272,7 +302,6 @@ def api_pois():
 
 @app.route('/api/cache/clear', methods=['POST'])
 def clear_cache():
-    """Admin endpoint to force-refresh Overpass data."""
     with get_db() as conn:
         conn.execute('DELETE FROM poi_cache')
     return jsonify({'cleared': True})
@@ -291,14 +320,14 @@ def delete_photo(photo_id):
         row = conn.execute('SELECT filename FROM photos WHERE id = ?', (photo_id,)).fetchone()
         if not row:
             return jsonify({'error': 'Not found'}), 404
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], row['filename'])
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        if row['filename']:
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], row['filename'])
+            if os.path.exists(filepath):
+                os.remove(filepath)
         conn.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
     return jsonify({'deleted': True})
 
 
-# Initialize DB and uploads folder on import (works with gunicorn)
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 init_db()
 
