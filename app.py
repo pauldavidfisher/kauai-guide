@@ -298,7 +298,9 @@ def delete_photo(photo_id):
     return jsonify({'deleted': True})
 
 
+# Initialize DB and uploads folder on import (works with gunicorn)
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+init_db()
+
 if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    init_db()
     app.run(debug=True, port=5051)
