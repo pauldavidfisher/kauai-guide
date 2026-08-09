@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Add a Photo — Kauai Guide{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  .upload-wrap { max-width: 740px; margin: 2.5rem auto; padding: 0 1.5rem 4rem; }
+  h1 { font-family: 'Playfair Display', serif; font-size: 2rem; margin-bottom: .35rem; }
+  .subhead { color: #6a8070; font-size: .9rem; margin-bottom: 2rem; }
+
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem 2rem; }
+  .field { display: flex; flex-direction: column; gap: .35rem; }
+  .field.full { grid-column: 1 / -1; }
+
+  label { font-size: .78rem; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: #6a8070; }
+
+  input[type=text], textarea, select {
+    padding: .6rem .85rem;
+    border: 1.5px solid #ddd; border-radius: var(--radius);
+    background: var(--white); font-family: 'DM Sans', sans-serif;
+    font-size: .9rem; color: var(--ink); outline: none; transition: border-color .15s;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--ocean); }
+  textarea { resize: vertical; min-height: 80px; }
+
+  .dropzone {
+    grid-column: 1 / -1; border: 2px dashed #c4b898;
+    border-radius: var(--radius); background: var(--sand-lt);
+    padding: 2.5rem 1rem; text-align: center; cursor: pointer; position: relative; transition: background .15s;
+  }
+  .dropzone.drag-over { background: #e8d5a8; border-color: var(--ocean); }
+  .dropzone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .dropzone p { font-size: .88rem; color: #8a7860; }
+  .dropzone small { font-size: .75rem; color: #aaa; display: block; margin-top: .25rem; }
+
+  #preview-wrap { display: none; grid-column: 1 / -1; }
+  #preview-img { max-height: 200px; border-radius: var(--radius); }
+
+  #gps-badge {
+    display: none; grid-column: 1 / -1;
+    padding: .6rem .85rem; background: #e8f5e9;
+    border: 1px solid #a5d6a7; border-radius: var(--radius);
+    font-size: .83rem; color: #2e7d32;
+  }
+  #gps-badge.error { background: #fff3e0; border-color: #ffcc80; color: #e65100; }
+
+  #map-picker { grid-column: 1 / -1; height: 280px; border-radius: var(--radius); border: 1.5px solid #ddd; overflow: hidden; }
+  .map-help { grid-column: 1 / -1; font-size: .8rem; color: #8a9890; margin-top: -.5rem; }
+
+  .latLngDisplay { font-size: .8rem; color: #6a8070; padding: .4rem .6rem; background: var(--sand-lt); border-radius: var(--radius); display: inline-block; }
+  .divider { grid-column: 1 / -1; border: none; border-top: 1px solid #e0d8cc; margin: .25rem 0; }
+  .form-footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; margin-top: .5rem; }
+  #submit-btn { padding: .7rem 2rem; font-size: .95rem; }
+  #status-msg { font-size: .85rem; color: #6a8070; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="upload-wrap">
+  <h1>Add a Photo</h1>
+  <p class="subhead">Pin a photo to a spot on Kauai. iPhone photos with GPS will auto-pin.</p>
+
+  <form id="upload-form" enctype="multipart/form-data">
+    <div class="form-grid">
+
+      <div class="dropzone" id="dropzone">
+        <input type="file" name="photo" id="photo-input" accept="image/*,.heic,.heif" required>
+        <p>🌺 <strong>Drop a photo here</strong> or click to browse</p>
+        <small>JPG · PNG · WEBP · HEIC (iPhone) · max 64 MB</small>
+      </div>
+      <div id="preview-wrap"><img id="preview-img" src="" alt=""></div>
+
+      <div id="gps-badge"></div>
+
+      <hr class="divider">
+
+      <div class="field">
+        <label>Title</label>
+        <input type="text" name="title" placeholder="e.g. Na Pali Coast sunrise">
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <select name="category">
+          <option value="see">See</option>
+          <option value="do">Do</option>
+          <option value="eat">Eat</option>
+        </select>
+      </div>
+
+      <div class="field full">
+        <label>Description</label>
+        <textarea name="description" placeholder="Tell us about this place…"></textarea>
+      </div>
+
+      <div class="field">
+        <label>Source</label>
+        <input type="text" name="source" placeholder="e.g. Personal photo, 2024">
+      </div>
+
+      <hr class="divider">
+
+      <div class="field full">
+        <label>Location — auto-detected from photo GPS, or type/click below</label>
+        <input type="text" id="address-input" name="address" placeholder="e.g. Hanalei Bay, Kauai">
+      </div>
+
+      <p class="map-help">📍 Map is locked to Kauai. Click to drop a pin or type an address and press Enter.</p>
+      <div id="map-picker"></div>
+      <input type="hidden" id="lat" name="lat">
+      <input type="hidden" id="lng" name="lng">
+      <div class="full"><span class="latLngDisplay" id="latlng-display">No location set yet</span></div>
+
+      <hr class="divider">
+
+      <div class="form-footer">
+        <button type="submit" class="btn btn-primary" id="submit-btn">Upload</button>
+        <span id="status-msg"></span>
+      </div>
+
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const KAUAI_BOUNDS = L.latLngBounds(
+  [{{ kauai.sw_lat }}, {{ kauai.sw_lng }}],
+  [{{ kauai.ne_lat }}, {{ kauai.ne_lng }}]
+);
+
+// ── Map picker ────────────────────────────────────────────────────────────────
+const pickerMap = L.map('map-picker', {
+  center: [{{ kauai.lat }}, {{ kauai.lng }}], zoom: 11,
+  minZoom: 10, maxBounds: KAUAI_BOUNDS, maxBoundsViscosity: 0.9,
+});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap', maxZoom: 19
+}).addTo(pickerMap);
+
+let pin = null;
+const pinIcon = L.divIcon({
+  className: '',
+  html: `<div style="width:20px;height:20px;background:#c4a96e;border:2.5px solid #1a2820;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.4);"></div>`,
+  iconSize: [20,20], iconAnchor: [10,10],
+});
+
+function placePin(lat, lng) {
+  if (pin) pickerMap.removeLayer(pin);
+  pin = L.marker([lat, lng], { icon: pinIcon, draggable: true }).addTo(pickerMap);
+  setLatLng(lat, lng);
+  pin.on('dragend', e => { const ll = e.target.getLatLng(); setLatLng(ll.lat, ll.lng); });
+}
+
+function setLatLng(lat, lng) {
+  document.getElementById('lat').value = lat.toFixed(7);
+  document.getElementById('lng').value = lng.toFixed(7);
+  document.getElementById('latlng-display').textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+pickerMap.on('click', e => placePin(e.latlng.lat, e.latlng.lng));
+
+// ── Address search ────────────────────────────────────────────────────────────
+document.getElementById('address-input').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const q = e.target.value.trim() + ', Kauai, Hawaii';
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`);
+  const data = await res.json();
+  if (data.length) {
+    placePin(+data[0].lat, +data[0].lon);
+    pickerMap.setView([+data[0].lat, +data[0].lon], 15);
+  }
+});
+
+// ── Photo input + EXIF GPS ────────────────────────────────────────────────────
+const photoInput = document.getElementById('photo-input');
+const gpsBadge   = document.getElementById('gps-badge');
+
+photoInput.addEventListener('change', async () => {
+  const file = photoInput.files[0];
+  if (!file) return;
+
+  // Show preview
+  const previewWrap = document.getElementById('preview-wrap');
+  const previewImg  = document.getElementById('preview-img');
+  // HEIC files can't be previewed in browser — show placeholder
+  if (file.name.toLowerCase().match(/\.heic|\.heif$/)) {
+    previewImg.src = '';
+    previewImg.alt = '(HEIC preview not supported in browser — photo will upload correctly)';
+  } else {
+    previewImg.src = URL.createObjectURL(file);
+  }
+  previewWrap.style.display = 'block';
+
+  // Try EXIF GPS extraction via server
+  gpsBadge.style.display = 'block';
+  gpsBadge.className = '';
+  gpsBadge.textContent = '🔍 Reading GPS from photo…';
+
+  const fd = new FormData();
+  fd.append('photo', file);
+  try {
+    const res = await fetch('/api/exif_gps', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.lat && data.lng) {
+      placePin(data.lat, data.lng);
+      pickerMap.setView([data.lat, data.lng], 16);
+      gpsBadge.textContent = `📍 GPS detected from photo: ${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`;
+    } else {
+      gpsBadge.className = 'error';
+      gpsBadge.textContent = '⚠ No GPS data in this photo — please pin a location on the map below.';
+    }
+  } catch (err) {
+    gpsBadge.className = 'error';
+    gpsBadge.textContent = '⚠ Could not read GPS — please pin a location on the map below.';
+  }
+});
+
+// Drag-drop
+const dropzone = document.getElementById('dropzone');
+['dragover','dragenter'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag-over'); }));
+['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, () => dropzone.classList.remove('drag-over')));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) { const dt = new DataTransfer(); dt.items.add(file); photoInput.files = dt.files; photoInput.dispatchEvent(new Event('change')); }
+});
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+document.getElementById('upload-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!document.getElementById('lat').value) {
+    document.getElementById('status-msg').textContent = '⚠ Please set a location on the map or use a photo with GPS.';
+    return;
+  }
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  document.getElementById('status-msg').textContent = 'Uploading…';
+  const res = await fetch('/upload', { method: 'POST', body: new FormData(e.target) });
+  const data = await res.json();
+  if (data.redirect) window.location.href = data.redirect;
+  else {
+    document.getElementById('status-msg').textContent = data.error || 'Upload failed.';
+    btn.disabled = false;
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}Kauai Guide — What to See, Do & Eat{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  body { overflow: hidden; }
+  #app { display: flex; height: calc(100vh - 56px); }
+
+  /* ── Side panel ── */
+  #panel {
+    width: 320px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    background: var(--paper);
+    border-right: 1px solid #d8d0c0;
+    overflow: hidden;
+  }
+
+  #tabs { display: flex; background: var(--ocean-dk); }
+  .tab-btn {
+    flex: 1; padding: .7rem .3rem;
+    background: none; border: none;
+    color: #a8c8d8; font-family: 'DM Sans', sans-serif;
+    font-size: .78rem; font-weight: 500;
+    letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer; border-bottom: 3px solid transparent;
+    transition: all .15s;
+  }
+  .tab-btn:hover { color: var(--sand-lt); }
+  .tab-btn.active { color: var(--sand-lt); border-bottom-color: var(--sand-dk); background: rgba(255,255,255,.06); }
+
+  #search-wrap {
+    padding: .65rem .75rem;
+    border-bottom: 1px solid #e0d8cc;
+    display: flex; gap: .5rem;
+  }
+  #search-input {
+    flex: 1; padding: .45rem .7rem;
+    border: 1.5px solid #c8bfaa; border-radius: var(--radius);
+    font-family: 'DM Sans', sans-serif; font-size: .85rem;
+    outline: none; background: var(--white);
+  }
+  #search-input:focus { border-color: var(--ocean); }
+  #search-btn {
+    padding: .45rem .8rem; background: var(--ocean-dk);
+    color: var(--sand-lt); border: none; border-radius: var(--radius);
+    cursor: pointer; font-size: .8rem; font-weight: 500;
+  }
+  #search-btn:hover { background: var(--ocean); }
+
+  #results { flex: 1; overflow-y: auto; padding: .5rem; display: flex; flex-direction: column; gap: .4rem; }
+
+  .result-card {
+    padding: .65rem .75rem;
+    border-radius: var(--radius);
+    background: var(--white);
+    border: 1px solid #e0d8cc;
+    cursor: pointer;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .result-card:hover, .result-card.active {
+    border-color: var(--ocean);
+    box-shadow: 0 2px 8px var(--shadow);
+  }
+  .result-name { font-size: .88rem; font-weight: 600; margin-bottom: .15rem; }
+  .result-kind { font-size: .72rem; color: var(--ocean); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+  .result-addr { font-size: .72rem; color: #7a9080; margin-top: .1rem; }
+  .result-delete {
+    margin-top: .4rem; font-size: .72rem; color: #c84820;
+    background: none; border: none; cursor: pointer; padding: 0;
+    display: block;
+  }
+  .result-delete:hover { text-decoration: underline; }
+
+  #status-msg { padding: 2rem 1rem; text-align: center; color: #8aaa98; font-size: .85rem; }
+
+  /* ── Map ── */
+  #map { flex: 1; }
+
+  /* Popup */
+  .leaflet-popup-content-wrapper {
+    border-radius: var(--radius) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    padding: 0 !important; overflow: hidden;
+  }
+  .leaflet-popup-content { margin: 0 !important; width: 240px !important; }
+  .popup-body { padding: .8rem; }
+  .popup-name { font-weight: 700; font-size: .95rem; margin-bottom: .25rem; }
+  .popup-kind { font-size: .72rem; color: var(--ocean); text-transform: uppercase; letter-spacing: .04em; margin-bottom: .3rem; }
+  .popup-addr { font-size: .75rem; color: #6a8070; margin-bottom: .4rem; }
+  .popup-img { width: 100%; height: 130px; object-fit: cover; display: block; margin-bottom: .5rem; }
+  .popup-link {
+    font-size: .78rem; font-weight: 500; color: var(--ocean);
+    text-decoration: none; display: inline-block;
+  }
+  .popup-link:hover { text-decoration: underline; }
+
+  /* Markers */
+  .mk { width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #1a2820;box-shadow:0 2px 5px rgba(0,0,0,.3); }
+  .mk-eat  { background:#c84820; }
+  .mk-do   { background:#2060a0; }
+  .mk-see  { background:#207840; }
+  .mk-photo { background:#c4a940; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="app">
+  <div id="panel">
+    <div id="tabs">
+      <button class="tab-btn active" data-tab="eat">🍽 Eat</button>
+      <button class="tab-btn" data-tab="do">🏄 Do</button>
+      <button class="tab-btn" data-tab="see">🌺 See</button>
+      <button class="tab-btn" data-tab="photos">📷 Photos</button>
+    </div>
+    <div id="search-wrap">
+      <input id="search-input" type="text" placeholder="Filter results…">
+      <button id="search-btn">Go</button>
+    </div>
+    <div id="results"><div id="status-msg">Loading…</div></div>
+  </div>
+  <div id="map"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const KAUAI_CENTER = [{{ kauai.lat }}, {{ kauai.lng }}];
+const KAUAI_BOUNDS = L.latLngBounds(
+  [{{ kauai.sw_lat }}, {{ kauai.sw_lng }}],
+  [{{ kauai.ne_lat }}, {{ kauai.ne_lng }}]
+);
+
+const map = L.map('map', {
+  center: KAUAI_CENTER, zoom: 11,
+  minZoom: 10, maxZoom: 18,
+  maxBounds: KAUAI_BOUNDS, maxBoundsViscosity: 0.9,
+}).fitBounds(KAUAI_BOUNDS);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}).addTo(map);
+
+let markers = [], activeCard = null, currentTab = 'eat';
+
+function makeIcon(tab) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="mk mk-${tab}"></div>`,
+    iconSize: [22,22], iconAnchor: [11,22], popupAnchor: [0,-24],
+  });
+}
+
+function clearMarkers() { markers.forEach(m => map.removeLayer(m)); markers = []; }
+
+function renderPois(pois, tab) {
+  const results = document.getElementById('results');
+  clearMarkers();
+
+  if (!pois.length) {
+    results.innerHTML = '<div id="status-msg">No results found.</div>';
+    return;
+  }
+
+  results.innerHTML = '';
+  pois.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+    card.innerHTML = `
+      <div class="result-name">${p.name}</div>
+      <div class="result-kind">${p.kind}${p.cuisine ? ' · ' + p.cuisine : ''}</div>
+      ${p.address ? `<div class="result-addr">📍 ${p.address}</div>` : ''}
+    `;
+    results.appendChild(card);
+
+    const popupHtml = `
+      <div class="popup-body">
+        <div class="popup-name">${p.name}</div>
+        <div class="popup-kind">${p.kind}${p.cuisine ? ' · ' + p.cuisine : ''}</div>
+        ${p.address ? `<div class="popup-addr">📍 ${p.address}</div>` : ''}
+        ${p.phone ? `<div class="popup-addr">📞 ${p.phone}</div>` : ''}
+        ${p.website ? `<a class="popup-link" href="${p.website}" target="_blank">Visit website ↗</a>` : ''}
+      </div>`;
+
+    const marker = L.marker([p.lat, p.lng], { icon: makeIcon(tab) }).addTo(map);
+    marker.bindPopup(popupHtml, { maxWidth: 260 });
+    markers.push(marker);
+
+    card.addEventListener('click', () => {
+      if (activeCard) activeCard.classList.remove('active');
+      card.classList.add('active'); activeCard = card;
+      map.setView([p.lat, p.lng], 15, { animate: true });
+      marker.openPopup();
+    });
+    marker.on('click', () => {
+      if (activeCard) activeCard.classList.remove('active');
+      card.classList.add('active'); activeCard = card;
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  });
+}
+
+function renderPhotos(photos) {
+  const results = document.getElementById('results');
+  clearMarkers();
+  if (!photos.length) {
+    results.innerHTML = '<div id="status-msg">No photos yet. <a href="/upload">Add one!</a></div>';
+    return;
+  }
+  results.innerHTML = '';
+  photos.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+    card.innerHTML = `
+      <div class="result-name">${p.title || 'Untitled'}</div>
+      <div class="result-kind">${p.category || ''}</div>
+      ${p.address ? `<div class="result-addr">📍 ${p.address}</div>` : ''}
+      <button class="result-delete" onclick="deletePhoto('${p.id}', event)">✕ Delete</button>
+    `;
+    results.appendChild(card);
+
+    const marker = L.marker([p.lat, p.lng], { icon: makeIcon('photo') }).addTo(map);
+    marker.bindPopup(`
+      <div class="popup-body">
+        <img class="popup-img" src="/uploads/${p.filename}" alt="">
+        <div class="popup-name">${p.title || 'Untitled'}</div>
+        ${p.address ? `<div class="popup-addr">📍 ${p.address}</div>` : ''}
+      </div>`);
+    markers.push(marker);
+
+    card.addEventListener('click', e => {
+      if (e.target.classList.contains('result-delete')) return;
+      map.setView([p.lat, p.lng], 15);
+      marker.openPopup();
+    });
+  });
+}
+
+async function deletePhoto(id, e) {
+  e.stopPropagation();
+  if (!confirm('Delete this photo?')) return;
+  await fetch(`/api/photos/${id}`, { method: 'DELETE' });
+  loadTab('photos');
+}
+
+async function loadTab(tab, term='') {
+  currentTab = tab;
+  document.getElementById('results').innerHTML = '<div id="status-msg">Loading…</div>';
+  clearMarkers();
+
+  if (tab === 'photos') {
+    const res = await fetch('/api/photos');
+    renderPhotos(await res.json());
+    return;
+  }
+
+  const params = new URLSearchParams({ tab });
+  if (term) params.set('term', term);
+  const res = await fetch(`/api/pois?${params}`);
+  const data = await res.json();
+  if (data.error) {
+    document.getElementById('results').innerHTML = `<div id="status-msg">⚠ ${data.error}</div>`;
+    return;
+  }
+  renderPois(data.pois, tab);
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('search-input').value = '';
+    loadTab(btn.dataset.tab);
+  });
+});
+
+document.getElementById('search-btn').addEventListener('click', () => {
+  loadTab(currentTab, document.getElementById('search-input').value.trim());
+});
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('search-btn').click();
+});
+
+loadTab('eat');
+</script>
+{% endblock %}

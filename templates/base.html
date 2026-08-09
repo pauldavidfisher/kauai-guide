@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Kauai Guide{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ocean:    #2a6b8a;
+      --ocean-lt: #5ba3c0;
+      --ocean-dk: #1a4a60;
+      --sand:     #e8d5a8;
+      --sand-lt:  #f5edd8;
+      --sand-dk:  #c4a96e;
+      --leaf:     #4a7c59;
+      --ink:      #1a2820;
+      --paper:    #f7f4ee;
+      --white:    #ffffff;
+      --shadow:   rgba(26,40,32,.15);
+      --radius:   6px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(--ink); min-height: 100vh; }
+
+    nav {
+      background: var(--ocean-dk);
+      padding: 0 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 900;
+      border-bottom: 2px solid var(--sand-dk);
+    }
+
+    .nav-brand {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.3rem;
+      color: var(--sand-lt);
+      text-decoration: none;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+    .nav-brand span { color: var(--sand-dk); font-style: italic; }
+
+    nav a.nav-link {
+      color: #a8c8d8;
+      text-decoration: none;
+      font-size: .82rem;
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      opacity: .8;
+      transition: opacity .15s;
+    }
+    nav a.nav-link:hover { opacity: 1; color: var(--sand-lt); }
+
+    .nav-spacer { flex: 1; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .5rem 1.2rem;
+      border-radius: var(--radius);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .85rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      transition: all .15s;
+    }
+    .btn-primary { background: var(--sand-dk); color: var(--ink); }
+    .btn-primary:hover { background: var(--sand); }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a class="nav-brand" href="/">Kauai <span>Guide</span></a>
+    <a class="nav-link" href="/">Map</a>
+    <div class="nav-spacer"></div>
+    <a class="btn btn-primary" href="/upload">+ Add Photo</a>
+  </nav>
+  {% block content %}{% endblock %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>
