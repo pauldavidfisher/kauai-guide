@@ -245,22 +245,28 @@ def api_pois():
     tab  = request.args.get('tab', 'eat')
     term = request.args.get('term', '').lower()
 
-    # Try cache first
+    # 1. Try SQLite cache first
     cached = get_cached_pois(tab)
     if cached is not None:
         results = cached
-        source  = 'cache'
     else:
-        results, error = fetch_from_overpass(tab)
-        if error:
-            return jsonify({'error': error, 'pois': []})
-        set_cached_pois(tab, results)
-        source = 'overpass'
+        # 2. Try static seed file
+        seed_path = os.path.join(os.path.dirname(__file__), 'static', f'data_{tab}.json')
+        if os.path.exists(seed_path):
+            with open(seed_path) as f:
+                data = json.load(f)
+            results = parse_osm(data.get('elements', []))
+            set_cached_pois(tab, results)
+        else:
+            # 3. Fall back to live Overpass
+            results, error = fetch_from_overpass(tab)
+            if error:
+                return jsonify({'error': error, 'pois': []})
+            set_cached_pois(tab, results)
 
     if term:
         results = [p for p in results if term in p['name'].lower() or term in p['kind'].lower()]
 
-    print(f"[pois] tab={tab} source={source} count={len(results)} term={term or '-'}")
     return jsonify({'pois': results})
 
 
