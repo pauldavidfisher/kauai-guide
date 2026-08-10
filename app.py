@@ -5,7 +5,8 @@ import time
 import requests
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, url_for, send_from_directory
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import cloudinary
 import cloudinary.uploader
 
@@ -13,8 +14,9 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif'}
-DB_PATH = os.path.join(os.path.dirname(__file__), 'kauai.db')
 CACHE_TTL = 60 * 60 * 24  # 24 hours in seconds
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 cloudinary.config(
     cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
@@ -33,31 +35,33 @@ QUERIES = {
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
 def init_db():
-    with get_db() as conn:
-        conn.executescript('''
-            CREATE TABLE IF NOT EXISTS photos (
-                id TEXT PRIMARY KEY, filename TEXT,
-                photo_url TEXT,
-                title TEXT, description TEXT, category TEXT,
-                lat REAL NOT NULL, lng REAL NOT NULL,
-                address TEXT, source TEXT, uploaded_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS poi_cache (
-                tab         TEXT PRIMARY KEY,
-                data        TEXT NOT NULL,
-                cached_at   REAL NOT NULL
-            );
-        ''')
-        # Migration safety: add photo_url column if this DB predates it
-        cols = [row['name'] for row in conn.execute('PRAGMA table_info(photos)').fetchall()]
-        if 'photo_url' not in cols:
-            conn.execute('ALTER TABLE photos ADD COLUMN photo_url TEXT')
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS photos (
+                    id TEXT PRIMARY KEY, filename TEXT,
+                    photo_url TEXT,
+                    title TEXT, description TEXT, category TEXT,
+                    lat REAL NOT NULL, lng REAL NOT NULL,
+                    address TEXT, source TEXT, uploaded_at TEXT NOT NULL
+                );
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS poi_cache (
+                    tab         TEXT PRIMARY KEY,
+                    data        TEXT NOT NULL,
+                    cached_at   DOUBLE PRECISION NOT NULL
+                );
+            ''')
+        conn.commit()
+    finally:
+        conn.close()
     print("DB initialized.")
 
 
@@ -66,21 +70,30 @@ def allowed_file(f):
 
 
 def get_cached_pois(tab):
-    with get_db() as conn:
-        row = conn.execute(
-            'SELECT data, cached_at FROM poi_cache WHERE tab = ?', (tab,)
-        ).fetchone()
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT data, cached_at FROM poi_cache WHERE tab = %s', (tab,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
     if row and (time.time() - row['cached_at']) < CACHE_TTL:
         return json.loads(row['data'])
     return None
 
 
 def set_cached_pois(tab, pois):
-    with get_db() as conn:
-        conn.execute(
-            'INSERT OR REPLACE INTO poi_cache (tab, data, cached_at) VALUES (?, ?, ?)',
-            (tab, json.dumps(pois), time.time())
-        )
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                '''INSERT INTO poi_cache (tab, data, cached_at) VALUES (%s, %s, %s)
+                   ON CONFLICT (tab) DO UPDATE SET data = EXCLUDED.data, cached_at = EXCLUDED.cached_at''',
+                (tab, json.dumps(pois), time.time())
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def dms_to_decimal(dms, ref):
@@ -169,7 +182,6 @@ def fetch_from_overpass(tab):
 
 
 def save_to_cloudinary(local_filepath):
-    """Upload a local file to Cloudinary and return its permanent secure URL."""
     result = cloudinary.uploader.upload(
         local_filepath,
         folder='kauai-guide',
@@ -197,7 +209,6 @@ def upload():
         temp_filepath = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
         file.save(temp_filepath)
 
-        # Convert HEIC to JPEG (Cloudinary can handle HEIC, but this keeps EXIF/GPS extraction reliable)
         if ext in ('heic', 'heif'):
             try:
                 from pillow_heif import register_heif_opener
@@ -225,7 +236,6 @@ def upload():
             os.remove(temp_filepath)
             return jsonify({'error': 'No location found. Please pin a location on the map or use a photo with GPS data.'}), 400
 
-        # Upload to Cloudinary, then remove the local temp copy
         try:
             photo_url = save_to_cloudinary(temp_filepath)
         except Exception as e:
@@ -236,18 +246,24 @@ def upload():
                 os.remove(temp_filepath)
 
         photo_id = uuid.uuid4().hex
-        with get_db() as conn:
-            conn.execute(
-                'INSERT INTO photos (id,filename,photo_url,title,description,category,lat,lng,address,source,uploaded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                (photo_id, None, photo_url,
-                 request.form.get('title','').strip() or None,
-                 request.form.get('description','').strip() or None,
-                 request.form.get('category','see'),
-                 lat, lng,
-                 request.form.get('address','').strip() or None,
-                 request.form.get('source','').strip() or None,
-                 datetime.utcnow().isoformat())
-            )
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    '''INSERT INTO photos (id,filename,photo_url,title,description,category,lat,lng,address,source,uploaded_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                    (photo_id, None, photo_url,
+                     request.form.get('title','').strip() or None,
+                     request.form.get('description','').strip() or None,
+                     request.form.get('category','see'),
+                     lat, lng,
+                     request.form.get('address','').strip() or None,
+                     request.form.get('source','').strip() or None,
+                     datetime.utcnow().isoformat())
+                )
+            conn.commit()
+        finally:
+            conn.close()
         return jsonify({'id': photo_id, 'redirect': url_for('index'), 'lat': lat, 'lng': lng, 'photo_url': photo_url})
 
     return render_template('upload.html', kauai=KAUAI)
@@ -269,7 +285,6 @@ def api_exif_gps():
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
-    # Kept for backward compatibility with any photos uploaded before the Cloudinary switch
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -302,29 +317,45 @@ def api_pois():
 
 @app.route('/api/cache/clear', methods=['POST'])
 def clear_cache():
-    with get_db() as conn:
-        conn.execute('DELETE FROM poi_cache')
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('DELETE FROM poi_cache')
+        conn.commit()
+    finally:
+        conn.close()
     return jsonify({'cleared': True})
 
 
 @app.route('/api/photos')
 def api_photos():
-    with get_db() as conn:
-        rows = conn.execute('SELECT * FROM photos ORDER BY uploaded_at DESC').fetchall()
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT * FROM photos ORDER BY uploaded_at DESC')
+            rows = cur.fetchall()
+    finally:
+        conn.close()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route('/api/photos/<photo_id>', methods=['DELETE'])
 def delete_photo(photo_id):
-    with get_db() as conn:
-        row = conn.execute('SELECT filename FROM photos WHERE id = ?', (photo_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'Not found'}), 404
-        if row['filename']:
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], row['filename'])
-            if os.path.exists(filepath):
-                os.remove(filepath)
-        conn.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT filename FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'Not found'}), 404
+            if row['filename']:
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], row['filename'])
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+            cur.execute('DELETE FROM photos WHERE id = %s', (photo_id,))
+        conn.commit()
+    finally:
+        conn.close()
     return jsonify({'deleted': True})
 
 
